@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: legacy_sync_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: legacy_sync
+      POSTGRES_PASSWORD: legacy_sync
+      POSTGRES_DB: legacy_sync
+    ports:
+      # Puerto 5433 en el host para no chocar con un Postgres local en 5432.
+      - "5433:5432"
+    volumes:
+      - legacy_sync_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U legacy_sync -d legacy_sync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  legacy_sync_pgdata:
