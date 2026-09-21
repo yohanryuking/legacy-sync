@@ -1,7 +1,8 @@
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from legacy_sync.db import make_engine
 from legacy_sync.models import Base
 
 
@@ -10,8 +11,17 @@ def session_factory():
     """Motor SQLite en memoria, aislado por test. Misma capa de modelos/ETL
     que Postgres en produccion; el upsert usa la rama de dialecto correcta
     (ver legacy_sync/etl/load.py).
+
+    `StaticPool` + `check_same_thread=False`: una sola conexion compartida
+    entre threads, necesaria porque el TestClient de FastAPI corre los
+    endpoints sincronos en un thread pool distinto del test.
     """
-    engine = make_engine("sqlite+pysqlite:///:memory:")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
     Base.metadata.create_all(bind=engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     yield factory

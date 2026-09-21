@@ -119,10 +119,33 @@ Separar `migration_logs` de `retry_queue` de `migrated_customers` es
 deliberado (ver [DECISIONS.md — ADR-002](DECISIONS.md#adr-002-tablas-separadas-para-datos-logs-y-reintentos)):
 nunca se mezclan datos limpios con registros en proceso de arreglo.
 
-## Fase 2 en adelante (documentado, no implementado)
+## Cola de reintentos activa (Sprint 3)
 
-- **Cola de reintentos activa**: worker que procesa `retry_queue` con backoff
-  exponencial y límite de intentos (Sprint 3).
+`legacy_sync/etl/retry_worker.py` procesa `retry_queue` (esquema definido
+desde Fase 1, worker agregado en Fase 2):
+
+- `process_retry_queue()` selecciona los ítems `pending` cuyo
+  `next_attempt_at` ya pasó y reintenta la carga (reusa `upsert_customer`,
+  también dentro de un `SAVEPOINT` por ítem).
+- En éxito, el ítem pasa a `succeeded`.
+- En fallo, `attempt_count` sube y `next_attempt_at` se recalcula con backoff
+  exponencial (`retry_backoff_base_seconds * 2**attempt_count` + jitter
+  aleatorio, para no reintentar todos los ítems en el mismo instante). Al
+  llegar a `max_attempts`, el ítem pasa a `failed` y deja de tocarse solo.
+- `legacy_sync/api/app.py` expone `POST /retry-queue/{id}/retry`, que llama
+  a `attempt_retry()` directamente (sin mirar `next_attempt_at` ni
+  `status`, salvo que ya esté `succeeded`) — es el botón "reintentar ahora"
+  de un registro específico. Corre incluso sobre un ítem `failed`: permite
+  rescatarlo manualmente si alguien arregló la causa raíz (ej. la
+  infraestructura de red) sin depender de que el backoff automático lo
+  vuelva a intentar solo.
+- `legacy_sync/cli.py`: `legacy-sync retry` corre `process_retry_queue()`
+  una vez — pensado para invocarse desde un cron o un loop; el *scheduler*
+  en sí (quién y cuándo lo llama en producción) es tarea de Sprint 6
+  (deploy).
+
+## Fase 2 en adelante (Sprint 4+, documentado, no implementado)
+
 - **Dashboard en tiempo real**: FastAPI exponiendo progreso vía WebSocket,
   alimentado por `LISTEN/NOTIFY` de Postgres en vez de Supabase Realtime
   (Sprint 4).

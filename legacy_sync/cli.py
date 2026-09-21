@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from legacy_sync.config import get_settings
 from legacy_sync.db import SessionLocal
 from legacy_sync.etl.pipeline import run_pipeline
+from legacy_sync.etl.retry_worker import process_retry_queue
 from legacy_sync.init_db import drop_db, init_db
 from legacy_sync.models.legacy import LegacyCustomer
 from legacy_sync.models.target import MigratedCustomer, MigrationLog, RetryQueueItem
@@ -69,6 +70,23 @@ def migrate_command(
     table.add_row("Actualizados", str(result.updated))
     table.add_row("Sin cambios", str(result.unchanged))
     table.add_row("Fallidos en carga (a retry_queue)", str(result.load_failed))
+    console.print(table)
+
+
+@app.command("retry")
+def retry_command() -> None:
+    """Procesa retry_queue: reintenta los items cuyo next_attempt_at ya paso."""
+    with SessionLocal() as session:
+        result = process_retry_queue(session)
+        session.commit()
+
+    table = Table(title="Resultado de la cola de reintentos")
+    table.add_column("Metrica")
+    table.add_column("Valor", justify="right")
+    table.add_row("Intentados", str(result.attempted))
+    table.add_row("Exitosos", str(result.succeeded))
+    table.add_row("Fallidos definitivamente", str(result.failed_permanently))
+    table.add_row("Reprogramados (pendientes)", str(result.still_pending))
     console.print(table)
 
 

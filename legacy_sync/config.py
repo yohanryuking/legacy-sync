@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     seed_record_count: int = 2000
     simulated_load_failure_rate: float = 0.03
 
+    # Backoff exponencial de la cola de reintentos (Sprint 3):
+    # next_attempt_at = now + base_seconds * 2**attempt_count + jitter aleatorio.
+    retry_backoff_base_seconds: float = 30.0
+    retry_backoff_jitter_seconds: float = 5.0
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -14,13 +14,15 @@ sin duplicarla si el proceso se corre dos veces.
 
 ## Estado del proyecto
 
-✅ **Fase 1 implementada** (Sprints 0-2 del roadmap original): setup, seed de
-datos sucios, extracción + validación con Pydantic, carga idempotente con
-upsert por clave natural.
+✅ **Fase 1** (Sprints 0-2): setup, seed de datos sucios, extracción +
+validación con Pydantic, carga idempotente con upsert por clave natural.
 
-📋 **Fases siguientes documentadas, no implementadas**: cola de reintentos con
-backoff activo, dashboard en tiempo real, checkpointing, deploy. Ver
-[docs/ROADMAP.md](docs/ROADMAP.md).
+✅ **Fase 2, Sprint 3**: worker de reintentos con backoff exponencial
+(`legacy_sync/etl/retry_worker.py`) + API FastAPI mínima con el endpoint de
+reintento forzado (`legacy_sync/api/app.py`).
+
+📋 **Sprints siguientes documentados, no implementados**: dashboard en tiempo
+real, checkpointing, deploy. Ver [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documentación
 
@@ -63,7 +65,23 @@ python -m legacy_sync migrate   # correrlo de nuevo
 python -m legacy_sync status    # migrated_customers no debe crecer
 ```
 
-### 5. Correr los tests
+### 5. Probar la cola de reintentos (Sprint 3)
+
+```bash
+python -m legacy_sync migrate --simulate-load-failures   # fuerza fallos aleatorios de carga
+python -m legacy_sync status                              # ver items en retry_queue
+python -m legacy_sync retry                               # procesa la cola con backoff
+python -m legacy_sync status                              # los exitosos ya están en migrated_customers
+```
+
+También se puede levantar la API mínima con el endpoint de reintento forzado:
+
+```bash
+uvicorn legacy_sync.api.app:app --reload
+# POST /retry-queue/{id}/retry
+```
+
+### 6. Correr los tests
 
 ```bash
 pytest -q
@@ -81,13 +99,16 @@ legacy_sync/
   models/        # SQLAlchemy: legado, destino, logs, cola de reintentos
   schemas.py     # Pydantic: validación estricta por registro
   etl/
-    extract.py   # lee el legado
-    validate.py  # aisla errores por registro (no rompe el batch)
-    checksum.py  # detecta si un registro realmente cambió
-    load.py      # upsert idempotente por clave natural
-    pipeline.py  # orquesta extract -> validate -> load
+    extract.py      # lee el legado
+    validate.py     # aisla errores por registro (no rompe el batch)
+    checksum.py     # detecta si un registro realmente cambió
+    load.py         # upsert idempotente por clave natural
+    pipeline.py     # orquesta extract -> validate -> load
+    retry_worker.py # procesa retry_queue con backoff exponencial (Sprint 3)
+  api/
+    app.py       # FastAPI mínima: POST /retry-queue/{id}/retry (Sprint 3)
   seed.py        # genera datos "sucios" de prueba
-  cli.py         # comandos: init-db, seed, migrate, status
+  cli.py         # comandos: init-db, seed, migrate, retry, status
 tests/           # incluye el test de idempotencia (correr 2x, 0 duplicados)
 docs/            # arquitectura, roadmap, decisiones
 ```

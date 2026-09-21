@@ -44,33 +44,46 @@ campo y motivo exactos sin detener el resto del batch.
 
 ---
 
-## 📋 Fase 2 — Resiliencia y observabilidad (documentada, no implementada)
+## ✅ Fase 2 (parcial) — Sprint 3: cola de reintentos con backoff activo
 
-### Sprint 3 — Cola de reintentos con backoff activo
-El esquema de `retry_queue` ya existe (`legacy_sync/models/target.py`); falta
-el worker que la procese.
+El esquema de `retry_queue` ya existía (`legacy_sync/models/target.py`); este
+sprint agrega el worker que la procesa.
 
-- [ ] Worker (`legacy_sync/etl/retry_worker.py`) que:
+- [x] Worker (`legacy_sync/etl/retry_worker.py`) que:
   - selecciona `retry_queue` con `status='pending' AND next_attempt_at <= now()`,
   - reintenta la carga (reusa `legacy_sync/etl/load.py`),
-  - en éxito: marca `status='succeeded'` (o borra la fila),
+  - en éxito: marca `status='succeeded'`,
   - en fallo: incrementa `attempt_count`, recalcula `next_attempt_at` con
-    backoff exponencial (`base * 2^attempt_count`, con jitter),
+    backoff exponencial (`base * 2^attempt_count` + jitter, configurable en
+    `Settings.retry_backoff_base_seconds`/`retry_backoff_jitter_seconds`),
   - al llegar a `max_attempts`: marca `status='failed'` (fallo definitivo,
-    requiere intervención manual — ya no se reintenta solo).
-- [ ] Endpoint FastAPI `POST /retry-queue/{id}/retry` para forzar un
-      reintento puntual desde el dashboard, saltando el `next_attempt_at`.
-- [ ] Tests: backoff crece correctamente entre intentos; un ítem que agota
-      `max_attempts` no se vuelve a tocar solo.
+    requiere intervención manual).
+- [x] `legacy_sync/api/app.py`: API FastAPI mínima con
+      `POST /retry-queue/{id}/retry`, para forzar un reintento puntual
+      saltando `next_attempt_at` (incluso sobre un ítem ya marcado `failed`
+      — útil cuando se corrigió la causa raíz manualmente). El resto del
+      dashboard (resumen, lista de fallos, WebSocket) es Sprint 4.
+- [x] CLI: `legacy-sync retry` corre `process_retry_queue()` una vez (pensado
+      para invocarse desde un cron o loop; el scheduler en sí es Sprint 6).
+- [x] Tests (`tests/test_retry_worker.py`, `tests/test_api_retry.py`): backoff
+      crece entre intentos, un ítem que agota `max_attempts` se marca
+      `failed` y no se vuelve a tocar solo, el endpoint fuerza el reintento
+      salteando `next_attempt_at`, un ítem ya `succeeded` no se reintenta.
+- [x] Verificado manualmente contra Postgres real: `migrate --simulate-load-failures`
+      encoló fallos reales en `retry_queue`, `legacy-sync retry` los recuperó
+      todos, y el endpoint FastAPI respondió correctamente vía `uvicorn`.
 
-**Criterio de aceptación**: un fallo de carga simulado (`--simulate-load-failures`)
-termina reintentándose automáticamente y, si el reintento tiene éxito,
-aparece en `migrated_customers` sin intervención manual.
+**Criterio de aceptación (cumplido)**: un fallo de carga simulado
+(`--simulate-load-failures`) termina reintentándose automáticamente y, si el
+reintento tiene éxito, aparece en `migrated_customers` sin intervención
+manual.
+
+## 📋 Fase 2 (resto) — Observabilidad y resiliencia (documentada, no implementada)
 
 ### Sprint 4 — Dashboard en tiempo real
 Reemplaza Supabase Realtime por Postgres `LISTEN/NOTIFY` + WebSocket.
 
-- [ ] API FastAPI (`api/`, nuevo paquete) con:
+- [ ] Ampliar `legacy_sync/api/app.py` (ya existe con el endpoint de Sprint 3) con:
   - `GET /migrations/summary` — conteos actuales (procesados/éxito/fallidos).
   - `GET /migrations/failures` — lista de `migration_logs` fallidos, paginada.
   - `WS /migrations/live` — stream de eventos de progreso.
@@ -116,14 +129,11 @@ reprocesar los registros ya confirmados — y sigue siendo idempotente.
 
 ## Cómo continuar (para el próximo desarrollador)
 
-1. Empezar por Sprint 3: el esquema de `retry_queue` ya está, solo falta el
-   worker. `legacy_sync/etl/pipeline.py::_load_with_retry_queue` ya encola
-   correctamente los fallos — el worker solo necesita leer de ahí.
-2. Sprint 4 depende de tener FastAPI corriendo; no depende de Sprint 3
-   terminado (el dashboard puede mostrar `migration_logs` sin que el worker
-   de reintentos exista todavía).
-3. Sprint 5 (checkpointing) es independiente de 3 y 4, se puede hacer en
+1. Seguir con Sprint 4: `legacy_sync/api/app.py` ya existe con FastAPI y el
+   endpoint de reintento forzado del Sprint 3 — agregar ahí los endpoints de
+   resumen/fallos y el WebSocket, reusando `get_session`.
+2. Sprint 5 (checkpointing) es independiente de 4, se puede hacer en
    paralelo.
-4. Antes de tocar el esquema de tablas para cualquier sprint nuevo, migrar de
+3. Antes de tocar el esquema de tablas para cualquier sprint nuevo, migrar de
    `metadata.create_all()` a Alembic (parte de Sprint 6, pero conviene
    adelantarlo si el esquema va a cambiar seguido).

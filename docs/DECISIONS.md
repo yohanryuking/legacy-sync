@@ -109,7 +109,32 @@ haría que el sistema reintente indefinidamente algo que nunca va a
 funcionar (un email vacío no se arregla solo), desperdiciando ciclos y
 ensuciando las métricas de "cuántos reintentos están realmente en curso".
 
-## ADR-006: SQLite en tests, Postgres en producción
+## ADR-006: Backoff con jitter, y el endpoint de reintento forzado ignora el estado `failed`
+
+**Contexto** (Sprint 3): al reintentar automáticamente ítems de
+`retry_queue`, si muchos fallan al mismo tiempo (ej. un corte de red breve),
+todos quedarían programados para reintentar exactamente en el mismo
+instante, generando un pico de carga innecesario ("thundering herd").
+Además, un ítem que agotó `max_attempts` (`status='failed'`) requiere
+intervención manual — pero esa intervención necesita una forma de
+dispararse.
+
+**Decisión**: el delay de backoff (`base_seconds * 2**attempt_count`) suma
+un jitter aleatorio (`0` a `retry_backoff_jitter_seconds`), y el endpoint
+`POST /retry-queue/{id}/retry` reintenta cualquier ítem que no esté ya
+`succeeded` — incluyendo uno `failed` — saltando tanto `next_attempt_at`
+como el chequeo de `max_attempts`.
+
+**Por qué**: el jitter dispersa los reintentos en el tiempo sin necesitar
+coordinación entre ítems. Permitir forzar un ítem `failed` es lo que le da
+sentido a que existan dos vías: el backoff automático es para fallos
+transitorios que se resuelven solos con el tiempo, y el botón manual es
+para cuando alguien ya identificó y corrigió la causa raíz (ej. arregló una
+credencial vencida) y no quiere esperar a que el sistema lo detecte solo —
+sin eso, un ítem `failed` quedaría huérfano para siempre salvo que se le
+haga un `UPDATE` manual en la base.
+
+## ADR-007: SQLite en tests, Postgres en producción
 
 **Contexto**: correr Postgres en CI (o en cada sandbox de desarrollo) es una
 dependencia extra que ralentiza el feedback loop de los tests.
