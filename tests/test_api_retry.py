@@ -1,10 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-import pytest
-from fastapi.testclient import TestClient
-
-from legacy_sync.api.app import app, get_session
 from legacy_sync.models.target import RetryQueueItem
 
 _PAYLOAD = {
@@ -15,21 +11,6 @@ _PAYLOAD = {
     "phone": "555-12",
     "source_created_at": "2024-01-01T10:00:00",
 }
-
-
-@pytest.fixture()
-def client(session_factory):
-    def _override():
-        session = session_factory()
-        try:
-            yield session
-            session.commit()
-        finally:
-            session.close()
-
-    app.dependency_overrides[get_session] = _override
-    yield TestClient(app)
-    app.dependency_overrides.clear()
 
 
 def test_force_retry_succeeds_and_returns_new_status(client, session):

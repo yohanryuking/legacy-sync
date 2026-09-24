@@ -32,3 +32,28 @@ def session_factory():
 def session(session_factory):
     with session_factory() as s:
         yield s
+
+
+@pytest.fixture()
+def client(session_factory):
+    """TestClient de la API con `get_session` apuntando al SQLite de test.
+
+    Se instancia sin `with`, a proposito: eso evita disparar el lifespan de
+    la app (que intentaria abrir una conexion `asyncpg` real a Postgres
+    para LISTEN/NOTIFY) durante los tests.
+    """
+    from fastapi.testclient import TestClient
+
+    from legacy_sync.api.app import app, get_session
+
+    def _override():
+        s = session_factory()
+        try:
+            yield s
+            s.commit()
+        finally:
+            s.close()
+
+    app.dependency_overrides[get_session] = _override
+    yield TestClient(app)
+    app.dependency_overrides.clear()

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>legacy-sync — dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>legacy-sync</h1>
+    <span id="conn-status" class="badge badge-off">conectando…</span>
+  </header>
+
+  <section id="summary" class="cards"></section>
+
+  <section class="panel">
+    <h2>Cola de reintentos (fallos de carga)</h2>
+    <p class="hint">Fallos transitorios (timeout simulado). Reintentan solos con backoff; "Reintentar ahora" salta la espera.</p>
+    <table id="retry-table">
+      <thead>
+        <tr>
+          <th>legacy_id</th><th>email</th><th>estado</th><th>intentos</th><th>último error</th><th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Registros inválidos (fallos de validación)</h2>
+    <p class="hint">Datos mal formados en el legado. No se reintentan solos — el dato de origen es el que hay que corregir.</p>
+    <table id="validation-table">
+      <thead>
+        <tr>
+          <th>legacy_id</th><th>campo</th><th>motivo</th><th>cuándo</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

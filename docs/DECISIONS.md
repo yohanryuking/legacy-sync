@@ -150,3 +150,55 @@ de idempotencia se valida en ambos motores: los tests cubren la rama SQLite
 automáticamente en cada corrida, y este mismo pipeline fue verificado
 manualmente contra Postgres real (`python -m legacy_sync migrate` corrido
 dos veces seguidas) durante el desarrollo de Fase 1.
+
+## ADR-008: Frontend estático sin build step, en vez de un SPA de React
+
+**Contexto** (Sprint 4): el roadmap original de portafolio proponía React
+para el dashboard, reusando el patrón de otro proyecto. El dashboard de
+*este* proyecto necesita mostrar unas pocas tarjetas de conteo, dos tablas,
+y un botón por fila — sin routing, sin estado complejo, sin formularios.
+
+**Decisión**: `legacy_sync/static/` es HTML + CSS + JS plano (sin
+TypeScript, sin bundler, sin `node_modules`), servido directamente por la
+misma app FastAPI vía `StaticFiles`.
+
+**Por qué**: la complejidad de un SPA de React (Vite/webpack, un
+`package.json` separado, un paso de build antes del deploy, hidratación,
+gestión de estado) no se justifica para esta superficie de UI. Un archivo
+`app.js` de ~80 líneas con `fetch` + `WebSocket` + manipulación de DOM hace
+exactamente lo mismo con cero dependencias de Node y cero paso de build —
+relevante porque este es un proyecto de **ingeniería de datos**, no de
+frontend: el tiempo vale más invertido en el pipeline, la cola de
+reintentos y el modelo de datos que en tooling de build de JS. Si el
+dashboard creciera (más vistas, estado compartido entre componentes,
+formularios de configuración), ahí sí se justificaría migrar a React — el
+roadmap (Sprint 6) deja esa puerta abierta explícitamente, no cerrada.
+
+**Alternativa descartada**: mantener React desde el principio. Se
+descartó porque hubiera significado escribir el mismo `fetch`+`WebSocket`
+dentro de `useEffect`, con el costo adicional de un bundler, sin ganar
+ninguna capacidad que el dashboard actual necesite.
+
+## ADR-009: Invalidar y refetchear, en vez de reconciliar eventos
+
+**Contexto** (Sprint 4): cuando el WebSocket avisa que algo cambió, hay dos
+formas de actualizar la UI: (a) mandar la fila completa que cambió por el
+socket y que el cliente la mezcle a mano en su estado local, o (b) mandar
+solo un aviso mínimo ("algo cambió en esta tabla") y que el cliente vuelva
+a pedir el estado por REST.
+
+**Decisión**: el `NOTIFY` de Postgres (y por lo tanto el mensaje de
+WebSocket) lleva únicamente el nombre de la tabla afectada
+(`TG_TABLE_NAME`). El frontend, al recibir cualquier mensaje, vuelve a
+pedir `GET /migrations/summary` + las listas (con un debounce de 250ms
+para no disparar un refetch por cada fila de un batch grande).
+
+**Por qué**: mandar la fila completa por el trigger de Postgres
+obligaría a serializar (`row_to_json`) y a que el cliente reimplemente en
+JS la misma lógica de agregación que el summary ya calcula en SQL
+(contar por estado, etc.) — dos lugares con la misma lógica, fácil de
+desincronizar. Con "invalidar y refetchear", el SQL sigue siendo la única
+fuente de verdad de los conteos, y el WebSocket es solo un disparador de
+"volvé a preguntar" — más simple, y suficientemente rápido para el volumen
+de este proyecto (cientos/miles de registros, no un feed de alta
+frecuencia donde el costo de un refetch completo importaría).

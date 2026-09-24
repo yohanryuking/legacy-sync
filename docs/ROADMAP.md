@@ -78,24 +78,46 @@ sprint agrega el worker que la procesa.
 reintento tiene éxito, aparece en `migrated_customers` sin intervención
 manual.
 
-## 📋 Fase 2 (resto) — Observabilidad y resiliencia (documentada, no implementada)
+## ✅ Fase 2 (parcial) — Sprint 4: dashboard en tiempo real
 
-### Sprint 4 — Dashboard en tiempo real
-Reemplaza Supabase Realtime por Postgres `LISTEN/NOTIFY` + WebSocket.
+Reemplaza Supabase Realtime por Postgres `LISTEN/NOTIFY` + WebSocket, tal
+como se planteó en `docs/DECISIONS.md` ADR-001.
 
-- [ ] Ampliar `legacy_sync/api/app.py` (ya existe con el endpoint de Sprint 3) con:
-  - `GET /migrations/summary` — conteos actuales (procesados/éxito/fallidos).
-  - `GET /migrations/failures` — lista de `migration_logs` fallidos, paginada.
-  - `WS /migrations/live` — stream de eventos de progreso.
-- [ ] Trigger de Postgres (`NOTIFY migration_events, ...`) en `migration_logs`
-      y `migrated_customers`, consumido por FastAPI vía `asyncpg`
-      `LISTEN` y reenviado a los WebSockets conectados.
-- [ ] Frontend React: barra de progreso en vivo, lista de fallos con motivo,
-      botón "reintentar" por registro (llama al endpoint de Sprint 3).
+- [x] `legacy_sync/realtime.py`: `install_notify_triggers()` crea una
+      función `legacy_sync_notify()` y un trigger `AFTER INSERT OR UPDATE`
+      por tabla (`migrated_customers`, `migration_logs`, `retry_queue`) que
+      hacen `pg_notify('legacy_sync_events', <tabla>)`. No-op fuera de
+      Postgres (SQLite en tests). Se instala automáticamente desde
+      `legacy_sync init-db`.
+- [x] `legacy_sync/api/listener.py` + `connection_manager.py`: una tarea de
+      fondo de FastAPI (`asyncpg.connect` + `LISTEN`) que reenvía cada
+      aviso a todos los WebSockets conectados. Un fallo al conectar se
+      loguea sin tumbar el resto de la API.
+- [x] `legacy_sync/api/app.py` ampliado con:
+  - `GET /migrations/summary` — conteos actuales por etapa.
+  - `GET /migrations/validation-failures` — fallos de validación, paginado.
+  - `GET /retry-queue` — cola de reintentos (todas las etapas), con filtro
+    `?status=`.
+  - `WS /migrations/live` — un mensaje (el nombre de la tabla) por cada
+    cambio; el cliente reacciona re-pidiendo el estado (ver ADR-009).
+- [x] Frontend estático sin build step (`legacy_sync/static/`): tarjetas de
+      resumen, tabla de cola de reintentos con botón "Reintentar ahora"
+      (llama al endpoint de Sprint 3), tabla de fallos de validación. Se
+      sirve desde la misma app FastAPI (`app.mount("/", StaticFiles(...))`).
+      Ver ADR-008 para por qué no es un SPA de React con bundler.
+- [x] Tests: `test_realtime.py`, `test_connection_manager.py`,
+      `test_api_dashboard.py` (summary, listas, conexión de WebSocket).
+- [x] Verificado manualmente contra Postgres real: con la API corriendo
+      bajo `uvicorn` y un WebSocket conectado, correr `legacy-sync retry`
+      **en otro proceso** hizo llegar el aviso al socket sin polling —
+      exactamente el escenario cross-proceso que Supabase Realtime
+      resolvía, ahora con `LISTEN/NOTIFY` liso.
 
-**Criterio de aceptación**: con el dashboard abierto en el navegador, correr
-`legacy-sync migrate` en otra terminal y ver los contadores actualizarse sin
-recargar la página.
+**Criterio de aceptación (cumplido)**: con el dashboard abierto en el
+navegador, correr `legacy-sync migrate` o `legacy-sync retry` en otra
+terminal actualiza los contadores sin recargar la página.
+
+## 📋 Fase 2 (resto) — Resiliencia (documentada, no implementada)
 
 ### Sprint 5 — Checkpointing y resiliencia
 - [ ] Tabla `migration_checkpoints` (`run_id`, `last_legacy_id_processed`,
@@ -115,9 +137,18 @@ reprocesar los registros ya confirmados — y sigue siendo idempotente.
 
 ### Sprint 6 — Deploy y presentación
 - [ ] Adoptar Alembic para migraciones de esquema versionadas (reemplaza
-      `Base.metadata.create_all`).
+      `Base.metadata.create_all`) — importante porque `install_notify_triggers()`
+      (Sprint 4) asume que corre después de crear las tablas; una migración
+      de Alembic debería incluir ese paso como parte de la migración misma.
+- [ ] Scheduler real para `legacy-sync retry` (hoy es un comando manual/cron
+      externo; Sprint 3 solo entrega el worker, no quién lo dispara).
 - [ ] Deploy: API + worker de reintentos + Postgres gestionado (Railway/Fly/
-      Render — cualquiera con Postgres administrado sirve).
+      Render — cualquiera con Postgres administrado sirve). Servir
+      `legacy_sync/static/` como parte del mismo deploy de la API (ya no
+      requiere un build de frontend separado, ver ADR-008).
+- [ ] Si el dashboard crece más allá de tablas simples, evaluar migrar
+      `legacy_sync/static/` a un SPA de React con bundler — no antes:
+      ver ADR-008 sobre por qué no hace falta todavía.
 - [ ] README con arquitectura y decisiones (ya cubierto por
       `docs/ARCHITECTURE.md` y `docs/DECISIONS.md` — actualizar si cambia algo
       en el deploy).
@@ -129,11 +160,12 @@ reprocesar los registros ya confirmados — y sigue siendo idempotente.
 
 ## Cómo continuar (para el próximo desarrollador)
 
-1. Seguir con Sprint 4: `legacy_sync/api/app.py` ya existe con FastAPI y el
-   endpoint de reintento forzado del Sprint 3 — agregar ahí los endpoints de
-   resumen/fallos y el WebSocket, reusando `get_session`.
-2. Sprint 5 (checkpointing) es independiente de 4, se puede hacer en
-   paralelo.
+1. Seguir con Sprint 5 (checkpointing): independiente de todo lo anterior,
+   se puede empezar directamente.
+2. El scheduler de `legacy-sync retry` (ítem suelto en Sprint 6) puede
+   adelantarse en cualquier momento — es solo un cron/loop que llama al
+   comando existente, no requiere cambios de código.
 3. Antes de tocar el esquema de tablas para cualquier sprint nuevo, migrar de
    `metadata.create_all()` a Alembic (parte de Sprint 6, pero conviene
-   adelantarlo si el esquema va a cambiar seguido).
+   adelantarlo si el esquema va a cambiar seguido) — recordar incluir
+   `install_notify_triggers()` en esa migración.

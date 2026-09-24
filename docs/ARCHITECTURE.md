@@ -144,17 +144,49 @@ desde Fase 1, worker agregado en Fase 2):
   en sí (quién y cuándo lo llama en producción) es tarea de Sprint 6
   (deploy).
 
-## Fase 2 en adelante (Sprint 4+, documentado, no implementado)
+## Dashboard en tiempo real (Sprint 4)
 
-- **Dashboard en tiempo real**: FastAPI exponiendo progreso vía WebSocket,
-  alimentado por `LISTEN/NOTIFY` de Postgres en vez de Supabase Realtime
-  (Sprint 4).
+Reemplaza a Supabase Realtime (ver [DECISIONS.md — ADR-001](DECISIONS.md#adr-001-postgresql-en-vez-de-supabase))
+con `LISTEN/NOTIFY` de Postgres liso:
+
+- `legacy_sync/realtime.py::install_notify_triggers()` crea una función
+  PL/pgSQL (`legacy_sync_notify()`) y un trigger `AFTER INSERT OR UPDATE`
+  en cada tabla observada (`migrated_customers`, `migration_logs`,
+  `retry_queue`) que hace `pg_notify('legacy_sync_events', TG_TABLE_NAME)`.
+  Se instala automáticamente al correr `legacy-sync init-db`; es un no-op
+  fuera de Postgres (SQLite en tests no tiene `LISTEN/NOTIFY` ni PL/pgSQL).
+- `legacy_sync/api/listener.py` mantiene una conexión `asyncpg` separada
+  (no la del pool de SQLAlchemy) escuchando ese canal, como una
+  `asyncio.Task` de fondo lanzada en el `lifespan` de FastAPI
+  (`legacy_sync/api/app.py`). Cada aviso recibido se reenvía a todos los
+  WebSockets conectados vía `ConnectionManager.broadcast()`
+  (`legacy_sync/api/connection_manager.py`).
+- El motivo de un canal separado (no "avisar en memoria" desde el propio
+  proceso de la API): el pipeline (`legacy-sync migrate`/`retry`) corre
+  como un **proceso distinto** de la API — típicamente un cron o un job de
+  CI/CD, no un request HTTP. Sin un canal a nivel de base de datos, la API
+  nunca se entera de lo que ese otro proceso hizo. Esto se verificó
+  manualmente: con la API bajo `uvicorn` y un WebSocket conectado, correr
+  `legacy-sync retry` en una terminal aparte hizo llegar el aviso al socket
+  sin polling.
+- `WS /migrations/live` no manda las filas cambiadas, solo el nombre de la
+  tabla afectada. El cliente reacciona re-pidiendo `GET /migrations/summary`
+  y las listas — ver [DECISIONS.md — ADR-009](DECISIONS.md#adr-009-invalidar-y-refetchear-en-vez-de-reconciliar-eventos)
+  para por qué "invalidar y refetchear" en vez de reconciliar el estado
+  incrementalmente en el cliente.
+- El frontend (`legacy_sync/static/`) es HTML/JS plano sin build step,
+  servido por la misma app FastAPI (`app.mount("/", StaticFiles(...))`).
+  Ver [DECISIONS.md — ADR-008](DECISIONS.md#adr-008-frontend-estatico-sin-build-step-en-vez-de-un-spa-de-react)
+  para por qué no es (todavía) un SPA de React con bundler.
+
+## Fase 2 (resto): resiliencia (Sprint 5+, documentado, no implementado)
+
 - **Checkpointing**: tabla `migration_checkpoints` con el último `legacy_id`
   procesado exitosamente, para retomar tras un crash sin reprocesar desde
   cero (Sprint 5).
 - **Alembic**: migraciones versionadas del esquema en vez de
   `metadata.create_all()` (a partir de que el esquema empiece a evolucionar
-  en producción).
+  en producción; Sprint 6).
 
 Detalle completo, con criterios de aceptación por sprint, en
 [ROADMAP.md](ROADMAP.md).
