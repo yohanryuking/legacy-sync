@@ -117,23 +117,42 @@ como se planteó en `docs/DECISIONS.md` ADR-001.
 navegador, correr `legacy-sync migrate` o `legacy-sync retry` en otra
 terminal actualiza los contadores sin recargar la página.
 
-## 📋 Fase 2 (resto) — Resiliencia (documentada, no implementada)
+## ✅ Fase 2 (parcial) — Sprint 5: checkpointing y resiliencia
 
-### Sprint 5 — Checkpointing y resiliencia
-- [ ] Tabla `migration_checkpoints` (`run_id`, `last_legacy_id_processed`,
-      `updated_at`).
-- [ ] `run_pipeline()` acepta un `checkpoint` opcional y arranca la
-      extracción desde `legacy_id > checkpoint` (ya soportado por el orden
-      de `extract.py`, falta la persistencia del punto de avance).
-- [ ] Guardar el checkpoint cada N registros (no solo al final), para que una
-      interrupción a mitad de camino pierda como mucho ese lote parcial.
-- [ ] Test que simula una interrupción (excepción forzada a mitad del
-      batch) y verifica que una segunda corrida retoma desde el checkpoint
-      sin reprocesar todo desde cero.
+- [x] Tabla `migration_checkpoints` (`run_id`, `last_legacy_id_processed`,
+      `status`, `started_at`, `updated_at`) — `legacy_sync/models/target.py`.
+- [x] `run_pipeline()` acepta `resume_run_id`/`resume_last`: sin ninguno de
+      los dos, cada corrida es nueva (`run_id` fresco) y arranca desde
+      `legacy_id > 0` — **el comportamiento por defecto no cambió**, así
+      que el escenario central del proyecto ("correr la migración dos
+      veces no duplica nada") sigue siendo exactamente el mismo. Con
+      `--resume`/`--resume-last`, arranca en
+      `legacy_id > last_legacy_id_processed` de esa corrida.
+- [x] El checkpoint se confirma (`session.commit()`) cada
+      `checkpoint_every` registros (default 200, configurable por CLI) y
+      al finalizar — una interrupción pierde como mucho ese lote parcial,
+      nunca la corrida completa.
+- [x] CLI: `legacy-sync migrate --resume <run_id>` / `--resume-last`, y
+      `legacy-sync runs` para listar corridas y su punto de avance sin
+      tener que copiar un UUID a mano.
+- [x] Tests (`tests/test_checkpoint.py`): corrida nueva siempre re-escanea
+      todo; el checkpoint llega hasta el último `legacy_id` al completar;
+      **una excepción forzada a mitad del batch, seguida de `--resume`,
+      procesa solo los registros restantes** (el test central);
+      `--resume-last` elige la corrida `running` más reciente; `--resume`
+      con un `run_id` inexistente, o `--resume-last` sin ninguna corrida
+      interrumpida, lanzan un error claro en vez de fallar en silencio.
+- [x] Verificado manualmente contra Postgres real con un **`kill -9`
+      real** (no solo una excepción de Python) a mitad de una migración
+      de 54 registros: la corrida quedó `running` en el checkpoint,
+      `legacy-sync migrate --resume-last` retomó exactamente después del
+      último confirmado, y una corrida normal posterior (sin `--resume`)
+      re-escaneó las 54 filas sin duplicar nada.
 
-**Criterio de aceptación**: matar el proceso de migración a mitad de camino
-(`kill -9` o excepción forzada) y, al volver a correrlo, no vuelve a
-reprocesar los registros ya confirmados — y sigue siendo idempotente.
+**Criterio de aceptación (cumplido)**: matar el proceso de migración a
+mitad de camino (`kill -9` o excepción forzada) y, al volver a correrlo con
+`--resume-last`, no vuelve a reprocesar los registros ya confirmados — y
+sigue siendo idempotente.
 
 ### Sprint 6 — Deploy y presentación
 - [ ] Adoptar Alembic para migraciones de esquema versionadas (reemplaza
@@ -160,11 +179,13 @@ reprocesar los registros ya confirmados — y sigue siendo idempotente.
 
 ## Cómo continuar (para el próximo desarrollador)
 
-1. Seguir con Sprint 5 (checkpointing): independiente de todo lo anterior,
-   se puede empezar directamente.
-2. El scheduler de `legacy-sync retry` (ítem suelto en Sprint 6) puede
-   adelantarse en cualquier momento — es solo un cron/loop que llama al
-   comando existente, no requiere cambios de código.
+1. Lo que queda es Sprint 6 (deploy): Alembic, scheduler de `legacy-sync
+   retry`, deploy del API+worker+Postgres, y el video demo. Ya no hay
+   sprints de funcionalidad pendientes — el resto es empaquetar y mostrar
+   lo que existe.
+2. El scheduler de `legacy-sync retry` puede adelantarse en cualquier
+   momento — es solo un cron/loop que llama al comando existente, no
+   requiere cambios de código.
 3. Antes de tocar el esquema de tablas para cualquier sprint nuevo, migrar de
    `metadata.create_all()` a Alembic (parte de Sprint 6, pero conviene
    adelantarlo si el esquema va a cambiar seguido) — recordar incluir

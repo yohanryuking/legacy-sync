@@ -179,14 +179,47 @@ con `LISTEN/NOTIFY` de Postgres liso:
   Ver [DECISIONS.md — ADR-008](DECISIONS.md#adr-008-frontend-estatico-sin-build-step-en-vez-de-un-spa-de-react)
   para por qué no es (todavía) un SPA de React con bundler.
 
-## Fase 2 (resto): resiliencia (Sprint 5+, documentado, no implementado)
+## Checkpointing (Sprint 5)
 
-- **Checkpointing**: tabla `migration_checkpoints` con el último `legacy_id`
-  procesado exitosamente, para retomar tras un crash sin reprocesar desde
-  cero (Sprint 5).
+`legacy_sync/models/target.py::MigrationCheckpoint` guarda el punto de
+avance de cada corrida (`run_id`, `last_legacy_id_processed`, `status`).
+La lógica vive en `legacy_sync/etl/checkpoint.py` y se usa desde
+`run_pipeline()` (`legacy_sync/etl/pipeline.py`):
+
+- **Sin `--resume`** (comportamiento por defecto): cada llamada crea un
+  `run_id` nuevo y arranca en `legacy_id > 0`, es decir, re-escanea *todo*
+  el legado. Esto es intencional: es lo que preserva, sin cambios, el
+  demo central del proyecto ("correr `legacy-sync migrate` dos veces no
+  duplica nada" — la idempotencia del upsert por `natural_key`/checksum ya
+  lo garantiza, con o sin checkpointing).
+- **Con `--resume <run_id>` / `--resume-last`**: retoma esa corrida
+  arrancando en `legacy_id > last_legacy_id_processed`, sin releer ni
+  revalidar lo ya confirmado. `--resume-last` busca la corrida `running`
+  más reciente, para no tener que copiar un UUID a mano después de un
+  crash.
+- El checkpoint se confirma (`session.commit()`) cada `checkpoint_every`
+  registros (default 200) *y* al terminar. Ese `commit()` es lo que hace
+  que sobreviva a una interrupción real: todo lo que el pipeline escribió
+  hasta ese punto (`migrated_customers`, `migration_logs`, `retry_queue`)
+  queda durable junto con el propio checkpoint, en la misma transacción —
+  así que como mucho se pierde el lote parcial entre dos checkpoints,
+  nunca la corrida completa.
+- Verificado con un **`kill -9` real** (no solo una excepción de Python)
+  a mitad de una migración de 54 registros contra Postgres: la corrida
+  quedó `running` en el último checkpoint confirmado,
+  `legacy-sync migrate --resume-last` retomó exactamente después de ese
+  punto, y una corrida normal posterior (sin `--resume`) volvió a
+  escanear las 54 filas sin duplicar nada.
+
+## Fase 2 (resto): deploy (Sprint 6, documentado, no implementado)
+
 - **Alembic**: migraciones versionadas del esquema en vez de
-  `metadata.create_all()` (a partir de que el esquema empiece a evolucionar
-  en producción; Sprint 6).
+  `metadata.create_all()` — debe incluir `install_notify_triggers()`
+  (Sprint 4) como parte de la migración misma.
+- **Scheduler** para `legacy-sync retry` (hoy es un comando manual/cron
+  externo).
+- **Deploy** de API + worker + Postgres gestionado, sirviendo
+  `legacy_sync/static/` desde la misma app.
 
 Detalle completo, con criterios de aceptación por sprint, en
 [ROADMAP.md](ROADMAP.md).

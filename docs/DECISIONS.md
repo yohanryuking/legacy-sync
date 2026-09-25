@@ -202,3 +202,33 @@ fuente de verdad de los conteos, y el WebSocket es solo un disparador de
 "volvé a preguntar" — más simple, y suficientemente rápido para el volumen
 de este proyecto (cientos/miles de registros, no un feed de alta
 frecuencia donde el costo de un refetch completo importaría).
+
+## ADR-010: `--resume` explícito, en vez de saltear automáticamente lo ya migrado
+
+**Contexto** (Sprint 5): al agregar checkpointing, había dos formas de
+usarlo. (a) que **todo** `legacy-sync migrate` recuerde para siempre el
+último `legacy_id` procesado globalmente y siempre arranque desde ahí en
+adelante (más "eficiente": nunca releer nada dos veces). (b) que cada
+`migrate` sin flags sea una corrida nueva e independiente que re-escanea
+todo el legado desde el principio, y que retomar el punto de una corrida
+interrumpida sea una acción explícita (`--resume`/`--resume-last`).
+
+**Decisión**: la opción (b). El comportamiento de `legacy-sync migrate`
+sin flags no cambió por la existencia de checkpointing.
+
+**Por qué**: la opción (a) rompe el demo central del proyecto. Si el
+checkpoint global avanzara solo, la segunda corrida de "correr la
+migración dos veces y verificar que no duplica nada" (Sprint 2) dejaría de
+leer y revalidar los registros ya migrados — el pipeline directamente no
+los tocaría, y ya no se podría demostrar la propiedad de idempotencia del
+upsert sobre esos registros en cada corrida, solo sobre los nuevos. Eso
+además cambia la semántica de "correr la migración" de un sistema
+legado real: un operador normalmente *quiere* poder re-correr la
+migración completa cuando corrige algo en el legado (ver
+[ADR-003](#adr-003-idempotencia-via-clave-natural--checksum-no-solo-insert)),
+no que el sistema decida por su cuenta qué registros "ya vio" y los
+ignore silenciosamente. El checkpointing resuelve un problema distinto —
+"no perder todo el trabajo de una corrida específica si se cae a mitad de
+camino" — y por eso retomarla es un gesto explícito (`--resume`), no un
+comportamiento ambiental que cambia el significado del comando por
+defecto.

@@ -102,3 +102,36 @@ class RetryQueueItem(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"RetryQueueItem(legacy_id={self.legacy_id!r}, status={self.status!r})"
+
+
+class MigrationCheckpoint(Base):
+    """Punto de avance de una corrida de migracion (Sprint 5).
+
+    Cada corrida de `legacy-sync migrate` (sin `--resume`) crea una fila
+    nueva con `run_id` propio y arranca desde `legacy_id > 0` -- el
+    comportamiento por defecto no cambia, y el escenario central del
+    proyecto ("correr la migracion dos veces no duplica nada") sigue
+    corriendo cada vez desde cero.
+
+    `--resume <run_id>` (o `--resume-last`) retoma una corrida que quedo
+    con `status='running'` -- tipicamente porque el proceso se interrumpio
+    a mitad de camino -- arrancando la extraccion en
+    `legacy_id > last_legacy_id_processed` en vez de reprocesar todo desde
+    el principio. Es una optimizacion de eficiencia sobre tablas legado
+    grandes, no un requisito de correctitud: la idempotencia del upsert
+    (ver ADR-003) ya garantiza que un re-escaneo completo tampoco duplica
+    nada.
+    """
+
+    __tablename__ = "migration_checkpoints"
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    last_legacy_id_processed: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running|completed
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"MigrationCheckpoint(run_id={self.run_id!r}, status={self.status!r})"

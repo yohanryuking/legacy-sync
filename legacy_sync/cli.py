@@ -4,6 +4,8 @@
     python -m legacy_sync seed --count 2000
     python -m legacy_sync migrate
     python -m legacy_sync migrate --simulate-load-failures   # ejercita retry_queue
+    python -m legacy_sync migrate --resume-last               # retoma una corrida interrumpida
+    python -m legacy_sync runs                                 # ver corridas y su punto de avance
     python -m legacy_sync status
 """
 
@@ -20,7 +22,12 @@ from legacy_sync.etl.pipeline import run_pipeline
 from legacy_sync.etl.retry_worker import process_retry_queue
 from legacy_sync.init_db import drop_db, init_db
 from legacy_sync.models.legacy import LegacyCustomer
-from legacy_sync.models.target import MigratedCustomer, MigrationLog, RetryQueueItem
+from legacy_sync.models.target import (
+    MigratedCustomer,
+    MigrationCheckpoint,
+    MigrationLog,
+    RetryQueueItem,
+)
 from legacy_sync.seed import generate_legacy_data
 
 app = typer.Typer(help="Pipeline de migracion legado -> destino.")
@@ -54,15 +61,37 @@ def migrate_command(
     simulate_load_failures: bool = typer.Option(
         False, "--simulate-load-failures", help="Fuerza fallos aleatorios de carga para probar la cola de reintentos."
     ),
+    resume: str = typer.Option(
+        None, "--resume", help="Retoma una corrida interrumpida por su run_id (ver `legacy-sync runs`)."
+    ),
+    resume_last: bool = typer.Option(
+        False, "--resume-last", help="Retoma la corrida 'running' mas reciente, sin tener que pasar el run_id."
+    ),
+    checkpoint_every: int = typer.Option(
+        200, "--checkpoint-every", help="Cada cuantos registros se confirma el punto de avance."
+    ),
 ) -> None:
-    """Corre la migracion completa: extract -> validate -> load. Idempotente."""
+    """Corre la migracion completa: extract -> validate -> load. Idempotente.
+
+    Sin --resume/--resume-last arranca una corrida nueva desde cero (el
+    comportamiento de siempre). Si el proceso se interrumpe a mitad de
+    camino, volver a correr con --resume-last retoma justo despues del
+    ultimo registro confirmado, sin releer los ya procesados.
+    """
     with SessionLocal() as session:
-        result = run_pipeline(session, simulate_load_failures=simulate_load_failures)
+        result = run_pipeline(
+            session,
+            simulate_load_failures=simulate_load_failures,
+            resume_run_id=resume,
+            resume_last=resume_last,
+            checkpoint_every=checkpoint_every,
+        )
         session.commit()
 
     table = Table(title="Resultado de la migracion")
     table.add_column("Metrica")
     table.add_column("Valor", justify="right")
+    table.add_row("Run ID", result.run_id)
     table.add_row("Total leidos", str(result.total))
     table.add_row("Validos", str(result.valid))
     table.add_row("Invalidos (a migration_logs)", str(result.invalid))
@@ -87,6 +116,28 @@ def retry_command() -> None:
     table.add_row("Exitosos", str(result.succeeded))
     table.add_row("Fallidos definitivamente", str(result.failed_permanently))
     table.add_row("Reprogramados (pendientes)", str(result.still_pending))
+    console.print(table)
+
+
+@app.command("runs")
+def runs_command(limit: int = typer.Option(10, help="Cuantas corridas mostrar, mas reciente primero.")) -> None:
+    """Lista corridas de migracion y su punto de avance (para elegir --resume)."""
+    with SessionLocal() as session:
+        stmt = select(MigrationCheckpoint).order_by(MigrationCheckpoint.started_at.desc()).limit(limit)
+        checkpoints = session.execute(stmt).scalars().all()
+
+    table = Table(title="Corridas de migracion")
+    table.add_column("run_id")
+    table.add_column("estado")
+    table.add_column("ultimo legacy_id", justify="right")
+    table.add_column("actualizado")
+    for checkpoint in checkpoints:
+        table.add_row(
+            checkpoint.run_id,
+            checkpoint.status,
+            str(checkpoint.last_legacy_id_processed),
+            str(checkpoint.updated_at),
+        )
     console.print(table)
 
 

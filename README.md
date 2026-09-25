@@ -28,8 +28,12 @@ reintento forzado.
 un frontend estático (`legacy_sync/static/`) que se actualiza solo, sin
 recargar la página, cuando otro proceso (`migrate`/`retry`) cambia algo.
 
-📋 **Sprints siguientes documentados, no implementados**: checkpointing,
-deploy. Ver [docs/ROADMAP.md](docs/ROADMAP.md).
+✅ **Fase 2, Sprint 5**: checkpointing — `legacy-sync migrate --resume-last`
+retoma una corrida interrumpida (`kill -9` a mitad de camino) justo después
+del último registro confirmado, sin releer todo el legado desde cero.
+
+📋 **Sprint siguiente documentado, no implementado**: deploy (Sprint 6). Ver
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documentación
 
@@ -104,7 +108,18 @@ Endpoints REST expuestos: `GET /migrations/summary`,
 `GET /migrations/validation-failures`, `GET /retry-queue`,
 `POST /retry-queue/{id}/retry`, `WS /migrations/live`.
 
-### 7. Correr los tests
+### 7. Simular un crash y retomar la migración (Sprint 5)
+
+```bash
+python -m legacy_sync seed --count 5000
+python -m legacy_sync migrate &   # correrla en background
+sleep 1 && kill -9 %1             # simular un crash a mitad de camino
+python -m legacy_sync runs        # ver la corrida que quedó "running" y su run_id
+python -m legacy_sync migrate --resume-last   # retoma justo después del último confirmado
+python -m legacy_sync runs        # ahora "completed"
+```
+
+### 8. Correr los tests
 
 ```bash
 pytest -q
@@ -119,23 +134,24 @@ escenario "correr la migración dos veces no duplica nada".
 
 ```
 legacy_sync/
-  models/        # SQLAlchemy: legado, destino, logs, cola de reintentos
+  models/        # SQLAlchemy: legado, destino, logs, cola de reintentos, checkpoints
   schemas.py     # Pydantic: validación estricta por registro
   realtime.py    # triggers NOTIFY de Postgres + helper de DSN para asyncpg
   etl/
-    extract.py      # lee el legado
+    extract.py      # lee el legado (soporta after_legacy_id para resume)
     validate.py     # aisla errores por registro (no rompe el batch)
     checksum.py     # detecta si un registro realmente cambió
     load.py         # upsert idempotente por clave natural
-    pipeline.py      # orquesta extract -> validate -> load
+    pipeline.py      # orquesta extract -> validate -> load, maneja checkpoints
     retry_worker.py  # procesa retry_queue con backoff exponencial (Sprint 3)
+    checkpoint.py    # persistencia del punto de avance de una corrida (Sprint 5)
   api/
     app.py                # FastAPI: dashboard + reintento forzado (Sprint 3-4)
     listener.py           # LISTEN de Postgres vía asyncpg (Sprint 4)
     connection_manager.py # registro de WebSockets conectados (Sprint 4)
   static/        # frontend HTML/JS sin build step (Sprint 4)
   seed.py        # genera datos "sucios" de prueba
-  cli.py         # comandos: init-db, seed, migrate, retry, status
+  cli.py         # comandos: init-db, seed, migrate, retry, runs, status
 tests/           # incluye el test de idempotencia (correr 2x, 0 duplicados)
 docs/            # arquitectura, roadmap, decisiones
 ```
