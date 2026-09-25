@@ -154,39 +154,62 @@ mitad de camino (`kill -9` o excepción forzada) y, al volver a correrlo con
 `--resume-last`, no vuelve a reprocesar los registros ya confirmados — y
 sigue siendo idempotente.
 
-### Sprint 6 — Deploy y presentación
-- [ ] Adoptar Alembic para migraciones de esquema versionadas (reemplaza
-      `Base.metadata.create_all`) — importante porque `install_notify_triggers()`
-      (Sprint 4) asume que corre después de crear las tablas; una migración
-      de Alembic debería incluir ese paso como parte de la migración misma.
-- [ ] Scheduler real para `legacy-sync retry` (hoy es un comando manual/cron
-      externo; Sprint 3 solo entrega el worker, no quién lo dispara).
-- [ ] Deploy: API + worker de reintentos + Postgres gestionado (Railway/Fly/
-      Render — cualquiera con Postgres administrado sirve). Servir
-      `legacy_sync/static/` como parte del mismo deploy de la API (ya no
-      requiere un build de frontend separado, ver ADR-008).
+### ✅ Sprint 6 (parcial) — Deploy y presentación
+
+Lo que se puede dejar listo desde el repo, sin depender de cuentas o
+credenciales externas:
+
+- [x] **Alembic**: `alembic/` con dos migraciones versionadas (esquema
+      inicial + triggers NOTIFY de Sprint 4). `legacy_sync/init_db.py`
+      ahora corre `alembic upgrade head`/`downgrade base`
+      programáticamente en vez de `Base.metadata.create_all()`. CI
+      (`.github/workflows/tests.yml`, job `alembic`) levanta un Postgres
+      real y corre `alembic upgrade head` + `alembic check` +
+      `downgrade base && upgrade head` en cada push, para detectar
+      apenas el historial de migraciones se desincronice de
+      `legacy_sync/models/`.
+- [x] **Scheduler real**: `legacy-sync worker [--interval N] [--once]`
+      (`legacy_sync/cli.py`) — lo que le faltaba a `legacy-sync retry`
+      (que solo corre una pasada). `--once` para invocarlo desde un cron
+      externo; sin flags queda en loop, pensado para un contenedor/servicio
+      dedicado.
+- [x] **Contenedor único** (`Dockerfile`) para los tres roles (API,
+      worker, CLI) — el comando decide el rol. `docker-compose.prod.yml`
+      orquesta Postgres + API (corre `alembic upgrade head` antes de
+      `uvicorn`) + worker, listo para correr localmente
+      (`docker compose -f docker-compose.prod.yml up --build`) o servir
+      de base a un deploy real.
+- [x] Verificado manualmente de punta a punta: build de la imagen, y los
+      tres contenedores (Postgres + API + worker) corriendo en red,
+      exactamente la topología de `docker-compose.prod.yml` — seed,
+      migración con fallos simulados, y el worker recogiendo
+      `retry_queue` desde su propio contenedor, confirmado contra el
+      dashboard vía HTTP. Detalle en [DEPLOY.md](DEPLOY.md).
 - [ ] Si el dashboard crece más allá de tablas simples, evaluar migrar
       `legacy_sync/static/` a un SPA de React con bundler — no antes:
       ver ADR-008 sobre por qué no hace falta todavía.
-- [ ] README con arquitectura y decisiones (ya cubierto por
-      `docs/ARCHITECTURE.md` y `docs/DECISIONS.md` — actualizar si cambia algo
-      en el deploy).
-- [ ] Video demo mostrando: una migración corriendo dos veces sin duplicar
-      datos, un registro fallando y reintentándose automáticamente, y el
-      dashboard actualizándose en vivo.
+
+**Dos ítems quedan fuera del alcance de este repo/agente, y son para quien
+lo continúe con sus propias cuentas**:
+
+- [ ] **Deploy real** a un proveedor gestionado (Railway/Fly/Render/etc.)
+      — los pasos genéricos están en [DEPLOY.md](DEPLOY.md), pero
+      ejecutarlos requiere una cuenta y credenciales que este repo no
+      tiene ni debería tener.
+- [ ] **Video demo** — requiere grabación manual; el guion sugerido está
+      en [DEPLOY.md](DEPLOY.md#video-demo).
 
 ---
 
 ## Cómo continuar (para el próximo desarrollador)
 
-1. Lo que queda es Sprint 6 (deploy): Alembic, scheduler de `legacy-sync
-   retry`, deploy del API+worker+Postgres, y el video demo. Ya no hay
-   sprints de funcionalidad pendientes — el resto es empaquetar y mostrar
-   lo que existe.
-2. El scheduler de `legacy-sync retry` puede adelantarse en cualquier
-   momento — es solo un cron/loop que llama al comando existente, no
-   requiere cambios de código.
-3. Antes de tocar el esquema de tablas para cualquier sprint nuevo, migrar de
-   `metadata.create_all()` a Alembic (parte de Sprint 6, pero conviene
-   adelantarlo si el esquema va a cambiar seguido) — recordar incluir
-   `install_notify_triggers()` en esa migración.
+1. Todos los sprints de funcionalidad e infraestructura de código están
+   completos. Lo único que falta es ejecutar, con cuentas propias, el
+   deploy real a un proveedor y grabar el video demo (ver DEPLOY.md).
+2. Si el proyecto sigue evolucionando más allá de esto: el candidato más
+   claro es ampliar el dashboard (Sprint 4) — más vistas, quizás ahí sí
+   se justifica migrar a React (ver ADR-008).
+3. Cualquier cambio de esquema nuevo va como migración de Alembic
+   (`alembic revision --autogenerate -m "..."`, revisar el archivo
+   generado antes de aplicarlo), nunca editando tablas a mano — ya no hay
+   `metadata.create_all()` en el camino de `init_db()`.

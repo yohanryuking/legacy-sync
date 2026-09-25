@@ -232,3 +232,88 @@ ignore silenciosamente. El checkpointing resuelve un problema distinto —
 camino" — y por eso retomarla es un gesto explícito (`--resume`), no un
 comportamiento ambiental que cambia el significado del comando por
 defecto.
+
+## ADR-011: Migraciones de Alembic con SQL duplicado, no llamando a código compartido
+
+**Contexto** (Sprint 6): al adoptar Alembic, la migración que instala los
+triggers de `NOTIFY` (Sprint 4) podía escribirse de dos formas: (a)
+importar y llamar a `legacy_sync.realtime.install_notify_triggers()`
+desde la migración, reusando el mismo código que ya existía, o (b)
+copiar el SQL directamente dentro del archivo de la migración.
+
+**Decisión**: la opción (b). `alembic/versions/..._notify_triggers...py`
+tiene su propia copia del SQL, y `legacy_sync/realtime.py` se redujo a lo
+que sigue en uso en runtime (`NOTIFY_CHANNEL`, `to_asyncpg_dsn`) —
+`install_notify_triggers()` se eliminó del módulo.
+
+**Por qué**: una migración de Alembic es un registro histórico de "esto
+es lo que se ejecutó contra la base en este punto del tiempo". Si en vez
+de eso llamara a una función del código de la aplicación, esa migración
+cambiaría de comportamiento silenciosamente el día que alguien edite
+`realtime.py` por otro motivo — rompiendo la garantía central de
+Alembic de que el historial de migraciones es reproducible y estable
+para siempre, incluso contra una base vieja. Mantener la función viva en
+`realtime.py` sin nada que la llamara (dead code, solo para que la
+migración la importe) tampoco es mejor: confunde a quien lee el módulo
+sin entender por qué existe algo que nadie invoca en runtime. Duplicar
+unas pocas líneas de SQL es más barato que cualquiera de esas dos
+alternativas.
+
+## ADR-012: Contenedor único con distintos comandos, en vez de imágenes separadas por rol
+
+**Contexto** (Sprint 6): el deploy necesita tres roles corriendo
+(API, worker de reintentos, y comandos puntuales de CLI como
+`migrate`/`seed`). Se podía construir una imagen de Docker por rol
+(`Dockerfile.api`, `Dockerfile.worker`, ...) o una sola imagen genérica
+donde el comando pasado a `docker run`/`command:` decide el rol.
+
+**Decisión**: una sola imagen (`Dockerfile`, sin sufijo). El `CMD` por
+defecto levanta la API; `docker-compose.prod.yml` sobreescribe `command:`
+para el servicio de worker, y los comandos puntuales (`seed`, `migrate`)
+se corren con `docker compose run --rm api legacy-sync ...`.
+
+**Por qué**: los tres roles comparten exactamente las mismas
+dependencias de Python (`legacy_sync` es un solo paquete) — no hay nada
+que instalar distinto entre "la imagen que sirve la API" y "la imagen que
+corre el worker". Separar en múltiples `Dockerfile`s solo agregaría
+build time duplicado y el riesgo de que se desincronicen (una imagen con
+una versión de una dependencia, otra con otra) sin ganar nada a cambio.
+Una imagen, tres comandos, es el patrón estándar para aplicaciones
+Python monolíticas con roles worker/web separados.
+
+## ADR-013: `pip install -e .` en el Dockerfile, no un build de wheel
+
+**Contexto** (Sprint 6): al verificar la imagen manualmente, un primer
+`Dockerfile` con `RUN pip install --no-cache-dir .` (sin `-e`) **parecía**
+funcionar -- la API arrancaba y el dashboard respondía. Pero era un
+falso positivo: `legacy_sync/static/` no estaba declarado como
+package-data en `pyproject.toml`, así que el build de wheel no lo incluía
+en el paquete instalado en `site-packages`. La API igual servía los
+archivos correctos por una coincidencia del entorno de verificación: el
+`WORKDIR /app` del contenedor contiene una copia sin instalar de
+`legacy_sync/` (copiada por el propio `Dockerfile` para el build), y en
+ese Python, el directorio de trabajo termina resolviendo `import
+legacy_sync` a esa copia en vez de a la de `site-packages` -- así que la
+verificación estaba, sin darse cuenta, probando código fuente crudo, no
+el paquete realmente instalado. Correrlo con un `WORKDIR` distinto (o
+sin la copia de `legacy_sync/` accesible desde ahí) hubiera fallado al
+no encontrar `static/`.
+
+**Decisión**: `pip install -e .` (instalación editable) en vez de un
+build de wheel.
+
+**Por qué**: este proyecto es una aplicación que se despliega desde su
+propio código fuente, no una librería para publicar y redistribuir a
+terceros -- no hay ninguna razón para pagar el costo de un paso de
+empaquetado (y sus modos de fallo, como el de `static/` de arriba) que
+solo tiene sentido cuando alguien más va a `pip install legacy-sync`
+desde un índice. Con instalación editable, `import legacy_sync` resuelve
+siempre al mismo árbol de archivos que ya está en `/app` (copiado por el
+propio `Dockerfile`), `static/` y `alembic.ini` incluidos, sin depender
+de qué declare o no `pyproject.toml` como package-data, y sin que el
+resultado dependa por accidente del `WORKDIR` o del directorio desde el
+que se invoque el proceso. Se volvió a verificar la imagen completa
+(API + worker + Postgres) con este cambio, incluyendo explícitamente
+correr `uvicorn` desde un directorio de trabajo *distinto* de `/app`
+(`-w /tmp`) para confirmar que la resolución del paquete ya no depende
+de esa coincidencia.

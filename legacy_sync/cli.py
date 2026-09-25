@@ -6,10 +6,15 @@
     python -m legacy_sync migrate --simulate-load-failures   # ejercita retry_queue
     python -m legacy_sync migrate --resume-last               # retoma una corrida interrumpida
     python -m legacy_sync runs                                 # ver corridas y su punto de avance
+    python -m legacy_sync retry                                 # procesa retry_queue una vez
+    python -m legacy_sync worker --interval 30                  # la procesa en loop (Sprint 6)
     python -m legacy_sync status
 """
 
 from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
 
 import typer
 from rich.console import Console
@@ -19,7 +24,7 @@ from sqlalchemy import func, select
 from legacy_sync.config import get_settings
 from legacy_sync.db import SessionLocal
 from legacy_sync.etl.pipeline import run_pipeline
-from legacy_sync.etl.retry_worker import process_retry_queue
+from legacy_sync.etl.retry_worker import RetryRunResult, process_retry_queue
 from legacy_sync.init_db import drop_db, init_db
 from legacy_sync.models.legacy import LegacyCustomer
 from legacy_sync.models.target import (
@@ -102,12 +107,17 @@ def migrate_command(
     console.print(table)
 
 
-@app.command("retry")
-def retry_command() -> None:
-    """Procesa retry_queue: reintenta los items cuyo next_attempt_at ya paso."""
+def _process_retry_queue_once() -> RetryRunResult:
     with SessionLocal() as session:
         result = process_retry_queue(session)
         session.commit()
+    return result
+
+
+@app.command("retry")
+def retry_command() -> None:
+    """Procesa retry_queue una vez: reintenta los items cuyo next_attempt_at ya paso."""
+    result = _process_retry_queue_once()
 
     table = Table(title="Resultado de la cola de reintentos")
     table.add_column("Metrica")
@@ -117,6 +127,44 @@ def retry_command() -> None:
     table.add_row("Fallidos definitivamente", str(result.failed_permanently))
     table.add_row("Reprogramados (pendientes)", str(result.still_pending))
     console.print(table)
+
+
+@app.command("worker")
+def worker_command(
+    interval: int = typer.Option(30, help="Segundos de espera entre pasadas de retry_queue."),
+    once: bool = typer.Option(
+        False, "--once", help="Corre una sola pasada y termina, en vez de quedar en loop (para invocar desde cron)."
+    ),
+) -> None:
+    """Scheduler de Sprint 6: procesa retry_queue periodicamente.
+
+    Es el "quien y cuando" que le faltaba a `legacy-sync retry` (que solo
+    corre una pasada). `--once` sirve para invocarlo desde un cron externo
+    (systemd timer, cron de Linux, un scheduled job de la plataforma de
+    deploy); sin `--once` queda corriendo en foreground con un sleep entre
+    pasadas -- pensado para un contenedor/servicio dedicado (ver
+    docs/DEPLOY.md).
+    """
+    if once:
+        result = _process_retry_queue_once()
+        console.print(
+            f"intentados={result.attempted} exitosos={result.succeeded} "
+            f"fallidos={result.failed_permanently} reprogramados={result.still_pending}"
+        )
+        return
+
+    console.print(f"[cyan]Worker de retry_queue corriendo cada {interval}s. Ctrl+C para detener.[/cyan]")
+    try:
+        while True:
+            result = _process_retry_queue_once()
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            console.print(
+                f"[{timestamp}] intentados={result.attempted} exitosos={result.succeeded} "
+                f"fallidos={result.failed_permanently} reprogramados={result.still_pending}"
+            )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Worker detenido.[/yellow]")
 
 
 @app.command("runs")

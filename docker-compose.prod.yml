@@ -1,0 +1,56 @@
+# Stack "de produccion" para correr localmente y validar el deploy antes de
+# subirlo a un proveedor administrado (ver docs/DEPLOY.md). Tres servicios,
+# los mismos tres roles que en producción:
+#   - postgres: la base de datos.
+#   - api: el dashboard (uvicorn), corre `alembic upgrade head` al arrancar.
+#   - worker: `legacy-sync worker`, procesa retry_queue en loop.
+#
+# Uso:
+#   docker compose -f docker-compose.prod.yml up --build
+#   docker compose -f docker-compose.prod.yml run --rm api legacy-sync seed --count 2000
+#   docker compose -f docker-compose.prod.yml run --rm api legacy-sync migrate
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: legacy_sync
+      POSTGRES_PASSWORD: legacy_sync
+      POSTGRES_DB: legacy_sync
+    volumes:
+      - legacy_sync_prod_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U legacy_sync -d legacy_sync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://legacy_sync:legacy_sync@postgres:5432/legacy_sync
+    ports:
+      - "8000:8000"
+    # Aplica migraciones antes de levantar la API -- asi un deploy nuevo
+    # nunca sirve requests contra un esquema desactualizado.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn legacy_sync.api.app:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://legacy_sync:legacy_sync@postgres:5432/legacy_sync
+    command: ["legacy-sync", "worker", "--interval", "30"]
+
+volumes:
+  legacy_sync_prod_pgdata:

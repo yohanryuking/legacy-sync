@@ -211,15 +211,33 @@ La lógica vive en `legacy_sync/etl/checkpoint.py` y se usa desde
   punto, y una corrida normal posterior (sin `--resume`) volvió a
   escanear las 54 filas sin duplicar nada.
 
-## Fase 2 (resto): deploy (Sprint 6, documentado, no implementado)
+## Migraciones versionadas y deploy (Sprint 6)
 
-- **Alembic**: migraciones versionadas del esquema en vez de
-  `metadata.create_all()` — debe incluir `install_notify_triggers()`
-  (Sprint 4) como parte de la migración misma.
-- **Scheduler** para `legacy-sync retry` (hoy es un comando manual/cron
-  externo).
-- **Deploy** de API + worker + Postgres gestionado, sirviendo
-  `legacy_sync/static/` desde la misma app.
+- **Alembic** (`alembic/`) reemplaza `Base.metadata.create_all()`.
+  `legacy_sync/init_db.py::init_db()`/`drop_db()` corren
+  `alembic upgrade head`/`downgrade base` programáticamente. Dos
+  migraciones: el esquema inicial (autogenerado desde
+  `legacy_sync/models/`) y los triggers NOTIFY de Sprint 4 — esta última
+  duplica el SQL de lo que antes era `legacy_sync/realtime.py::install_notify_triggers()`
+  a propósito (una migración es un snapshot histórico, no debe depender
+  de código que puede cambiar después). CI levanta un Postgres real y
+  corre `alembic upgrade head` + `alembic check` en cada push, para que
+  un desfasaje entre las migraciones y los modelos se note enseguida.
+- **Scheduler**: `legacy-sync worker [--interval N] [--once]`
+  (`legacy_sync/cli.py`) — el "quién y cuándo" que le faltaba a
+  `legacy-sync retry` (que solo hace una pasada). `--once` para cron
+  externo; sin flags, un loop en foreground pensado para un
+  contenedor/servicio dedicado.
+- **Contenedor**: un único `Dockerfile` para los tres roles (API, worker,
+  CLI) — el comando pasado al `docker run`/`command:` de compose decide
+  cuál. `docker-compose.prod.yml` orquesta Postgres + API (corre
+  `alembic upgrade head` antes de `uvicorn`) + worker. Verificado
+  manualmente de punta a punta (build + los tres contenedores hablando
+  entre sí en una red Docker) — detalle en [DEPLOY.md](DEPLOY.md).
+- **Deploy real a un proveedor gestionado y el video demo** quedan fuera
+  del alcance de este repo: requieren cuentas/credenciales propias y
+  grabación manual respectivamente. Pasos genéricos en
+  [DEPLOY.md](DEPLOY.md).
 
 Detalle completo, con criterios de aceptación por sprint, en
 [ROADMAP.md](ROADMAP.md).

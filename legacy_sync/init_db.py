@@ -1,19 +1,33 @@
-"""Crea todas las tablas (legado + destino) en la DB configurada.
+"""Aplica el esquema de la DB configurada, vía Alembic (Sprint 6).
 
-Fase 1 usa `Base.metadata.create_all` por simplicidad. Cuando el esquema
-empiece a evolucionar en produccion, migrar a Alembic (ver docs/ROADMAP.md,
-Sprint 3+) para tener migraciones versionadas en vez de recrear tablas.
+Fase 1 usaba `Base.metadata.create_all()` por simplicidad. Ahora el
+esquema (tablas + los triggers de NOTIFY de Sprint 4) esta versionado en
+`alembic/versions/` -- `init_db()` corre `alembic upgrade head`
+programaticamente, en vez de recrear tablas a mano. Los modelos de
+SQLAlchemy (`legacy_sync/models/`) siguen siendo la fuente de verdad para
+`alembic revision --autogenerate`; lo que cambia es que ahora hay un
+historial versionado de como se llego al esquema actual, no solo el
+estado final.
 """
 
-from legacy_sync.db import engine
-from legacy_sync.models import Base
-from legacy_sync.realtime import install_notify_triggers
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
+
+
+def _alembic_config() -> Config:
+    return Config(str(_ALEMBIC_INI))
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    install_notify_triggers(engine)
+    """Crea/actualiza el esquema aplicando todas las migraciones pendientes."""
+    command.upgrade(_alembic_config(), "head")
 
 
 def drop_db() -> None:
-    Base.metadata.drop_all(bind=engine)
+    """Revierte todas las migraciones: borra tablas, triggers y la funcion NOTIFY."""
+    command.downgrade(_alembic_config(), "base")

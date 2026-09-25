@@ -32,14 +32,21 @@ recargar la página, cuando otro proceso (`migrate`/`retry`) cambia algo.
 retoma una corrida interrumpida (`kill -9` a mitad de camino) justo después
 del último registro confirmado, sin releer todo el legado desde cero.
 
-📋 **Sprint siguiente documentado, no implementado**: deploy (Sprint 6). Ver
-[docs/ROADMAP.md](docs/ROADMAP.md).
+✅ **Fase 2, Sprint 6** (parcial): migraciones versionadas con Alembic,
+scheduler real (`legacy-sync worker`), imagen de Docker única y
+`docker-compose.prod.yml` para correr API + worker + Postgres juntos —
+verificado de punta a punta. **Deploy real a un proveedor gestionado y el
+video demo quedan pendientes**: requieren cuentas/credenciales propias y
+grabación manual respectivamente — ver [docs/DEPLOY.md](docs/DEPLOY.md).
+
+Ver [docs/ROADMAP.md](docs/ROADMAP.md) para el detalle sprint por sprint.
 
 ## Documentación
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — cómo está armado el pipeline y por qué.
 - [docs/ROADMAP.md](docs/ROADMAP.md) — sprints completados y pendientes, con criterios de aceptación.
 - [docs/DECISIONS.md](docs/DECISIONS.md) — decisiones de diseño (ADRs) y sus alternativas descartadas.
+- [docs/DEPLOY.md](docs/DEPLOY.md) — cómo correr el stack en contenedores y llevarlo a un proveedor gestionado.
 
 ## Quickstart
 
@@ -119,7 +126,26 @@ python -m legacy_sync migrate --resume-last   # retoma justo después del últim
 python -m legacy_sync runs        # ahora "completed"
 ```
 
-### 8. Correr los tests
+### 8. Correr el scheduler de reintentos (Sprint 6)
+
+```bash
+python -m legacy_sync worker --interval 30   # loop en foreground, Ctrl+C para detener
+python -m legacy_sync worker --once          # una sola pasada, para invocar desde cron
+```
+
+### 9. Correr todo en contenedores (Sprint 6)
+
+```bash
+docker compose -f docker-compose.prod.yml up --build
+docker compose -f docker-compose.prod.yml run --rm api legacy-sync seed --count 2000
+docker compose -f docker-compose.prod.yml run --rm api legacy-sync migrate
+```
+
+Postgres + API (corre `alembic upgrade head` sola al arrancar) + worker,
+los tres en contenedores separados. Detalle y cómo llevarlo a un
+proveedor gestionado en [docs/DEPLOY.md](docs/DEPLOY.md).
+
+### 10. Correr los tests
 
 ```bash
 pytest -q
@@ -136,7 +162,8 @@ escenario "correr la migración dos veces no duplica nada".
 legacy_sync/
   models/        # SQLAlchemy: legado, destino, logs, cola de reintentos, checkpoints
   schemas.py     # Pydantic: validación estricta por registro
-  realtime.py    # triggers NOTIFY de Postgres + helper de DSN para asyncpg
+  realtime.py    # NOTIFY_CHANNEL + helper de DSN para asyncpg
+  init_db.py     # aplica migraciones de Alembic (init-db / init-db --reset)
   etl/
     extract.py      # lee el legado (soporta after_legacy_id para resume)
     validate.py     # aisla errores por registro (no rompe el batch)
@@ -151,7 +178,10 @@ legacy_sync/
     connection_manager.py # registro de WebSockets conectados (Sprint 4)
   static/        # frontend HTML/JS sin build step (Sprint 4)
   seed.py        # genera datos "sucios" de prueba
-  cli.py         # comandos: init-db, seed, migrate, retry, runs, status
+  cli.py         # comandos: init-db, seed, migrate, retry, worker, runs, status
+alembic/         # migraciones versionadas del esquema (Sprint 6)
+Dockerfile                 # imagen unica: API, worker o CLI segun el comando (Sprint 6)
+docker-compose.prod.yml    # postgres + api + worker juntos (Sprint 6)
 tests/           # incluye el test de idempotencia (correr 2x, 0 duplicados)
-docs/            # arquitectura, roadmap, decisiones
+docs/            # arquitectura, roadmap, decisiones, deploy
 ```

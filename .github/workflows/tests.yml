@@ -14,3 +14,34 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  alembic:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: legacy_sync
+          POSTGRES_PASSWORD: legacy_sync
+          POSTGRES_DB: legacy_sync
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U legacy_sync -d legacy_sync"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://legacy_sync:legacy_sync@localhost:5432/legacy_sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      # Corre todas las migraciones sobre un Postgres limpio y confirma que
+      # no falten cambios respecto a los modelos (evita que el historial de
+      # migraciones se desincronice de legacy_sync/models/ sin que nadie lo note).
+      - run: alembic upgrade head
+      - run: alembic check
+      - run: alembic downgrade base && alembic upgrade head
